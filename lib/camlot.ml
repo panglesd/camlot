@@ -3,9 +3,23 @@ module Text = struct
     type t = string
   end
 
-  type t = Line.t list
+  (* type t = Line.t list *)
 
-  let length v = 0 (* TODO *)
+  type t = string
+
+  let length = String.length
+  let append = ( ^ )
+  let empty = ""
+
+  let replace t ~from ~to_ ~with_ =
+    Format.printf "Calling replace with from:%d to:%d with:%s\n%!" from to_
+      with_;
+    let initial = String.sub t 0 from in
+    let final = String.sub t to_ (String.length t - to_) in
+    initial ^ with_ ^ final
+
+  let of_lines l = String.concat "\n" l
+  let to_lines l = String.split_on_char '\n' l
 end
 
 module Changes = struct
@@ -43,21 +57,45 @@ module Changes = struct
   end
 
   module ChangeSet = struct
-    type t = { section : ChangeDesc.t; inserted : Text.t list }
-    type t = { section : ChangeDesc.t; inserted : Text.t list }
+    type t = Text.t change list
 
-    let length v = ChangeDesc.length v.section
+    let length v = ChangeDesc.length v
 
-    let fold_changes (changes : 'c change list)
+    (** When `individual` is true, adjacent changes (which are kept separate for
+        position mapping) are reported separately. *)
+    let fold_changes ?(individual = true) (changes : 'c change list)
         ~(f :
            'acc -> fromA:int -> toA:int -> fromB:int -> toB:int -> 'c -> 'acc)
         acc =
-      List.fold_left (fun acc change -> _) acc changes
+      let rec loop (acc, posA, posB) changes =
+        match changes with
+        | [] -> acc
+        | { replacement = None; replaced } :: q ->
+            loop (acc, posA + replaced, posB + replaced) q
+        | { replacement = Some (l_r, replacement); replaced } :: q ->
+            let toA, toB, q, text =
+              if individual then (posA + replaced, posB + l_r, q, replacement)
+              else
+                let rec collect (toA, toB, text) l =
+                  match l with
+                  | [] | { replacement = None; _ } :: _ -> (toA, toB, l, text)
+                  | { replacement = Some (l_r, replacement); replaced } :: q ->
+                      collect
+                        (toA + replaced, toB + l_r, Text.append text replacement)
+                        q
+                in
+                collect (posA, posB, Text.empty) changes
+            in
+            let acc = f acc ~fromA:posA ~toA ~fromB:posB ~toB text in
+            loop (acc, toA, toB) q
+      in
+      loop (acc, 0, 0) changes
 
     let apply v doc =
       if length v <> Text.length doc then failwith "Not good";
       fold_changes v
-        (fun doc (fromA, toA, fromB, _toB, text) -> Text.replace text doc)
+        ~f:(fun doc ~fromA ~toA ~fromB ~toB:_ text ->
+          Text.replace ~from:fromB ~to_:(fromB + (toA - fromA)) ~with_:text doc)
         doc
 
     (* Here is how the JSON is represented:
@@ -66,34 +104,63 @@ module Changes = struct
          - A "kept" section if it is a number.
          -
     *)
-    let to_JSON v = List.fold_left (fun json -> _)
+    let to_JSON v =
+      let res =
+        List.map
+          (function
+            | { replaced; replacement = None } -> `Int replaced
+            | { replaced; replacement = Some (_, replacement) } ->
+                let l = Text.to_lines replacement in
+                let l = List.map (fun x -> `String x) l in
+                `Array (`Int replaced :: l))
+          v
+      in
+      `Array res
 
     let fromJSON json =
       match json with
-      | `Array arr ->
-          List.fold_left (fun (sections, inserted) part ->
-              let sections, inserted =
-                match part with
-                | `Int replaced ->
-                    ( { ChangeDesc.replaced; replacement = None } :: sections,
-                      inserted )
-                | `Array [ `Int replaced ] ->
-                    let section =
-                      { ChangeDesc.replaced; replacement = Some 0 }
-                    in
-                    (section :: sections, inserted)
-                | `Array arr ->
-                    List.fold_left
-                      (fun (sections, inserted) json ->
-                        match json with
-                        | `Array [ `Int replaced; `String insert ] -> _
-                        | _ -> failwith "non appropriate")
-                      (sections, inserted) arr
-                | _ -> _
-              in
-              let inserted = _ in
-              (sections, inserted))
+      | `List arr ->
+          List.fold_left
+            (fun changes -> function
+              | `Int replaced -> { replaced; replacement = None } :: changes
+              | `List [ `Int replaced ] ->
+                  let section = { replaced; replacement = Some (0, "") } in
+                  section :: changes
+              | `List (`Int replaced :: q) ->
+                  let lines =
+                    List.map
+                      (function
+                        | `String s -> s | _ -> failwith "should be a string")
+                      q
+                  in
+                  let text = Text.of_lines lines in
+                  let section =
+                    { replaced; replacement = Some (Text.length text, text) }
+                  in
+                  section :: changes
+              | _ ->
+                  failwith "non appropriate JSON: should be an int or an array")
+            [] arr
+          |> List.rev
       | _ -> failwith "should be an array"
+
+    let compose csA csB =
+      let rec loop acc csA csB =
+        match (csA, csB) with
+        | [], [] -> acc
+        | ({ replaced = 0; _ } as deletion) :: qA, _ ->
+            let acc = deletion :: acc in
+            loop acc qA csB
+        | _, ({ replaced = 0; _ } as deletion) :: qB ->
+            let acc = deletion :: acc in
+            loop acc csA qB
+        | [], _ | _, [] -> failwith "Mismatched change set length"
+        | cA :: qA, cB :: qB ->
+            let len2 = function Some l -> String.length l | None -> 0 in
+            
+        | _, _ -> _
+      in
+      _
   end
 
   module ChangeSpec = struct
@@ -103,16 +170,3 @@ module Changes = struct
       | Set of ChangeSet.t
   end
 end
-
-module Text = struct
-  type node = ..
-  and line = ..
-  and t = Node of node | Leaf of line list
-end
-
-type change = { from : int; to_ : int option; insert : string option }
-(** [from] is the beginning of the change. If [to_] is present, everything
-    between [from] and [to_] is removed. If [insert] is present, it is added at
-    position [from]. *)
-
-type change_set = change list
