@@ -23,36 +23,33 @@ module Text = struct
 end
 
 module Changes = struct
-  type 'a change = {
-    replaced : int;
-    replacement : (int * 'a) option (* None represents everything kept *);
-  }
+  type 'a change = Keep of int | Replace of int * (int * 'a)
+
+  let print l =
+    List.iter
+      (function
+        | Keep i -> Format.printf "Keep %d ;" i
+        | Replace (i, (_, s)) -> Format.printf "Replace %d by '%s'" i s)
+      l;
+    print_newline ()
+
+  let len (Keep i | Replace (i, _)) = i
 
   module ChangeDesc = struct
     type single_change = unit change
     type t = single_change list
 
-    let length v =
-      List.fold_left (fun result { replaced; _ } -> result + replaced) 0 v
-
-    let new_length v =
-      List.fold_left
-        (fun result { replaced; replacement } ->
-          match replacement with
-          | None -> result + replaced
-          | Some (replacement, _) -> result + replacement)
-        0 v
-
-    let empty v =
-      match v with [] | [ { replacement = None; _ } ] -> true | _ -> false
+    let length v = List.fold_left (fun result c -> result + len c) 0 v
+    let new_length v = List.fold_left (fun result c -> result + len c) 0 v
+    let empty v = match v with [] | [ Keep _ ] -> true | _ -> false
 
     let iter_gaps v ~f =
       List.fold_left
-        (fun (posA, posB) { replaced; replacement } ->
-          f posA posB replaced;
-          match replacement with
-          | None -> (posA + replaced, posB + replaced)
-          | Some (replacement, _) -> (posA + replaced, posB + replacement))
+        (fun (posA, posB) c ->
+          f posA posB (len c);
+          match c with
+          | Keep i -> (posA + i, posB + i)
+          | Replace (i, (r, _)) -> (posA + i, posB + r))
         (0, 0) v
   end
 
@@ -70,19 +67,16 @@ module Changes = struct
       let rec loop (acc, posA, posB) changes =
         match changes with
         | [] -> acc
-        | { replacement = None; replaced } :: q ->
-            loop (acc, posA + replaced, posB + replaced) q
-        | { replacement = Some (l_r, replacement); replaced } :: q ->
+        | Keep i :: q -> loop (acc, posA + i, posB + i) q
+        | Replace (replaced, (l_r, replacement)) :: q ->
             let toA, toB, q, text =
               if individual then (posA + replaced, posB + l_r, q, replacement)
               else
                 let rec collect (toA, toB, text) l =
                   match l with
-                  | [] | { replacement = None; _ } :: _ -> (toA, toB, l, text)
-                  | { replacement = Some (l_r, replacement); replaced } :: q ->
-                      collect
-                        (toA + replaced, toB + l_r, Text.append text replacement)
-                        q
+                  | [] | Keep _ :: _ -> (toA, toB, l, text)
+                  | Replace (i, (l_r, r)) :: q ->
+                      collect (toA + i, toB + l_r, Text.append text r) q
                 in
                 collect (posA, posB, Text.empty) changes
             in
@@ -108,23 +102,23 @@ module Changes = struct
       let res =
         List.map
           (function
-            | { replaced; replacement = None } -> `Int replaced
-            | { replaced; replacement = Some (_, replacement) } ->
+            | Keep replaced -> `Int replaced
+            | Replace (replaced, (_, replacement)) ->
                 let l = Text.to_lines replacement in
                 let l = List.map (fun x -> `String x) l in
-                `Array (`Int replaced :: l))
+                `List (`Int replaced :: l))
           v
       in
-      `Array res
+      `List res
 
     let fromJSON json =
       match json with
       | `List arr ->
           List.fold_left
             (fun changes -> function
-              | `Int replaced -> { replaced; replacement = None } :: changes
+              | `Int replaced -> Keep replaced :: changes
               | `List [ `Int replaced ] ->
-                  let section = { replaced; replacement = Some (0, "") } in
+                  let section = Replace (replaced, (0, "")) in
                   section :: changes
               | `List (`Int replaced :: q) ->
                   let lines =
@@ -134,9 +128,7 @@ module Changes = struct
                       q
                   in
                   let text = Text.of_lines lines in
-                  let section =
-                    { replaced; replacement = Some (Text.length text, text) }
-                  in
+                  let section = Replace (replaced, (Text.length text, text)) in
                   section :: changes
               | _ ->
                   failwith "non appropriate JSON: should be an int or an array")
@@ -144,23 +136,66 @@ module Changes = struct
           |> List.rev
       | _ -> failwith "should be an array"
 
-    let compose csA csB =
-      let rec loop acc csA csB =
-        match (csA, csB) with
-        | [], [] -> acc
-        | ({ replaced = 0; _ } as deletion) :: qA, _ ->
-            let acc = deletion :: acc in
-            loop acc qA csB
-        | _, ({ replaced = 0; _ } as deletion) :: qB ->
-            let acc = deletion :: acc in
-            loop acc csA qB
-        | [], _ | _, [] -> failwith "Mismatched change set length"
-        | cA :: qA, cB :: qB ->
-            let len2 = function Some l -> String.length l | None -> 0 in
-            
-        | _, _ -> _
-      in
-      _
+    (* let compose csA csB = *)
+    (*   let consume ~consumed ~kept = *)
+    (*     if consumed = kept then [] else [ Keep (kept - consumed) ] *)
+    (*   in *)
+    (*   let split c n = *)
+    (*     assert (n <= len c); *)
+    (*     match c with *)
+    (*     | Keep a -> (Keep n, Keep (n - a)) *)
+    (*     | Replace (a, (l, s)) -> (Replace (n, (l, s)), Replace (a - n, (0, ""))) *)
+    (*   in *)
+    (*   let rec loop acc csA csB = *)
+    (*     match (csA, csB) with *)
+    (*     (\* Finished *\) *)
+    (*     | [], [] -> acc *)
+    (*     (\* Should reach [] at the same time *\) *)
+    (*     | [], _ | _, [] -> failwith "Mismatched change set length" *)
+    (*     (\* Skip emptied modification *\) *)
+    (*     | (Keep 0 | Replace (0, (0, ""))) :: csA, csB *)
+    (*     | csA, (Keep 0 | Replace (0, (0, ""))) :: csB -> *)
+    (*         loop acc csA csB *)
+    (*     (\* Handle deletion *\) *)
+    (*     | (Replace (0, _) as deletion) :: qA, _ -> *)
+    (*         let acc = deletion :: acc in *)
+    (*         loop acc qA csB *)
+    (*     | _, (Replace (0, _) as deletion) :: qB -> *)
+    (*         let acc = deletion :: acc in *)
+    (*         loop acc csA qB *)
+    (*     (\* A is keeping *\) *)
+    (*     | (Keep a as ca) :: qA, cb :: qB -> *)
+    (*         let len = len cb in *)
+    (*         if len <= a then *)
+    (*           let _, remaining = split ca len in *)
+    (*           loop (cb :: acc) (remaining :: qA) qB *)
+    (*         else *)
+    (*           let handled, unhandled = split cb a in *)
+    (*           loop (handled :: acc) qA (unhandled :: qB) *)
+    (*     (\* A is modifying *\) *)
+    (*     | Replace (a, (l, r)) :: qA, cb :: qB -> *)
+    (*        if l > len cb then *)
+    (*          let acc = *)
+    (*     | Keep a :: qA, cb :: qB (\* when a < len cb *\) -> *)
+    (*         let consumed, remaining = split cb a in *)
+    (*         let acc = _ :: acc in *)
+    (*         let qB = _ :: qB in *)
+    (*         loop acc qA qB *)
+    (*     | Keep a :: qA, Keep b :: qB -> *)
+    (*         if a < b then loop (Keep a :: acc) qA (Keep (b - a) :: qB) *)
+    (*         else if b < a then loop (Keep b :: acc) (Keep (a - b) :: qA) qB *)
+    (*         else loop (Keep a :: acc) qA qB *)
+    (*     | Keep a :: qA, Replace (b, (len, rep)) :: qB -> *)
+    (*         if a > b then *)
+    (*           loop (Replace (b, (len, rep)) :: acc) (Keep (a - b) :: qA) qB *)
+    (*         else if a < b then loop (Keep b :: acc) (Keep (a - b) :: qA) qB *)
+    (*         else loop (Keep a :: acc) qA qB *)
+    (*     | cA :: qA, cB :: qB -> *)
+    (*         let len2 = function Some l -> String.length l | None -> 0 in *)
+    (*         _ *)
+    (*     | _, _ -> _ *)
+    (*   in *)
+    (*   _ *)
   end
 
   module ChangeSpec = struct
