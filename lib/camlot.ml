@@ -28,8 +28,8 @@ module Changes = struct
   let print l =
     List.iter
       (function
-        | Keep i -> Format.printf "Keep %d ;" i
-        | Replace (i, (_, s)) -> Format.printf "Replace %d by '%s'" i s)
+        | Keep i -> Format.printf "Keep %d ;%!" i
+        | Replace (i, (_, s)) -> Format.printf "Replace %d by '%s'%!" i s)
       l;
     print_newline ()
 
@@ -86,7 +86,15 @@ module Changes = struct
       loop (acc, 0, 0) changes
 
     let apply v doc =
-      if length v <> Text.length doc then failwith "Not good";
+      if length v <> Text.length doc then (
+        Format.printf "Character is: %c %c %c %c%!" doc.[41] doc.[42] doc.[43]
+          doc.[44];
+        Format.printf "\"%s\"\n%!" doc;
+        print v;
+        failwith
+          (Format.sprintf
+             "Length of document and change do not correspond: %d vs %d"
+             (length v) (Text.length doc)));
       fold_changes v
         ~f:(fun doc ~fromA ~toA ~fromB ~toB:_ text ->
           Text.replace ~from:fromB ~to_:(fromB + (toA - fromA)) ~with_:text doc)
@@ -130,8 +138,14 @@ module Changes = struct
                   let text = Text.of_lines lines in
                   let section = Replace (replaced, (Text.length text, text)) in
                   section :: changes
-              | _ ->
-                  failwith "non appropriate JSON: should be an int or an array")
+              | json ->
+                  let s =
+                    Format.sprintf
+                      "non appropriate JSON: should be an int or an array. \
+                       Instead, got %s"
+                      (Yojson.Safe.to_string json)
+                  in
+                  failwith s)
             [] arr
           |> List.rev
       | _ -> failwith "should be an array"
