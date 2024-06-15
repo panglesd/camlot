@@ -7,13 +7,17 @@ module Text = struct
 
   type t = string
 
-  let length = String.length
+  let length ?(is_utf16 = false) x =
+    if is_utf16 then String.length x / 2 else String.length x
+
   let append = ( ^ )
   let empty = ""
 
-  let replace t ~from ~to_ ~with_ =
+  let replace ?(is_utf16 = false) t ~from ~to_ ~with_ =
     Format.printf "Calling replace with from:%d to:%d with:%s\n%!" from to_
       with_;
+    let from = if is_utf16 then 2 * from else from in
+    let to_ = if is_utf16 then 2 * to_ else to_ in
     let initial = String.sub t 0 from in
     let final = String.sub t to_ (String.length t - to_) in
     initial ^ with_ ^ final
@@ -58,7 +62,7 @@ module Changes = struct
 
     let length v = ChangeDesc.length v
 
-    (** When `individual` is true, adjacent changes (which are kept separate for
+    (** When [individual] is true, adjacent changes (which are kept separate for
         position mapping) are reported separately. *)
     let fold_changes ?(individual = true) (changes : 'c change list)
         ~(f :
@@ -85,8 +89,8 @@ module Changes = struct
       in
       loop (acc, 0, 0) changes
 
-    let apply v doc =
-      if length v <> Text.length doc then (
+    let apply ?(is_utf16 = false) v doc =
+      if length v <> Text.length ~is_utf16 doc then (
         Format.printf "Character is: %c %c %c %c%!" doc.[41] doc.[42] doc.[43]
           doc.[44];
         Format.printf "\"%s\"\n%!" doc;
@@ -97,7 +101,9 @@ module Changes = struct
              (length v) (Text.length doc)));
       fold_changes v
         ~f:(fun doc ~fromA ~toA ~fromB ~toB:_ text ->
-          Text.replace ~from:fromB ~to_:(fromB + (toA - fromA)) ~with_:text doc)
+          Text.replace ~is_utf16 ~from:fromB
+            ~to_:(fromB + (toA - fromA))
+            ~with_:text doc)
         doc
 
     (* Here is how the JSON is represented:
